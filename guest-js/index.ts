@@ -90,7 +90,7 @@ class TauriMIDIAccess extends EventTarget implements MIDIAccess {
         this.inputs.delete(id);
         input.state = "disconnected";
         events.push(
-          new TauriMIDIConnectionEvent("disconnected", {
+          new TauriMIDIConnectionEvent("statechange", {
             port: input,
           })
         );
@@ -103,7 +103,7 @@ class TauriMIDIAccess extends EventTarget implements MIDIAccess {
         this.outputs.delete(id);
         output.state = "disconnected";
         events.push(
-          new TauriMIDIConnectionEvent("disconnected", {
+          new TauriMIDIConnectionEvent("statechange", {
             port: output,
           })
         );
@@ -117,7 +117,7 @@ class TauriMIDIAccess extends EventTarget implements MIDIAccess {
       input.state = "connected";
       this.inputs.set(id, input);
       events.push(
-        new TauriMIDIConnectionEvent("connected", {
+        new TauriMIDIConnectionEvent("statechange", {
           port: input,
         })
       );
@@ -130,7 +130,7 @@ class TauriMIDIAccess extends EventTarget implements MIDIAccess {
       output.state = "connected";
       this.outputs.set(id, output);
       events.push(
-        new TauriMIDIConnectionEvent("connected", {
+        new TauriMIDIConnectionEvent("statechange", {
           port: output,
         })
       );
@@ -272,6 +272,17 @@ class TauriMIDIInput extends TauriMIDIPort implements MIDIInput {
   set onmidimessage(cb: ((this: MIDIInput, ev: Event) => any) | null) {
     this._onmidimessage = cb;
     if (this.connection !== "open") this.open();
+  }
+
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions
+  ) {
+    super.addEventListener(type, listener, options);
+    if (type === "midimessage" && this.state === "connected" && this.connection !== "open") {
+      this.open();
+    }
   }
 }
 
