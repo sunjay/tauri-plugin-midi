@@ -210,6 +210,55 @@ struct StateChange {
 #[derive(serde::Serialize, specta::Type, tauri_specta::Event, Clone)]
 struct MIDIMessage(String, String, Vec<u8>);
 
+/// Installs a CoreMIDI notification client on the current thread so that the process receives
+/// hotplug (device added/removed) notifications, which in turn causes `MIDIGetNumberOfSources` and
+/// `MIDIGetNumberOfDestinations` to reflect live state.
+///
+/// Without this, `midir::MidiInput::new` will be the first `MIDIClientCreate` call in the process.
+/// `midir`'s CoreMIDI backend creates its client with a null notify proc and installs no runloop,
+/// which causes CoreMIDI to silently never deliver hotplug notifications to this process. The
+/// device list observed via `midir` remains frozen at the time of the first `MIDIClientCreate`,
+/// making the plugin unable to detect devices connected or disconnected after startup.
+///
+/// We fix that by creating our own `MIDIClient` with a notify callback before any other CoreMIDI
+/// call in the process. The callback is empty because the goal is simply to keep CoreMIDI's
+/// per-process device state current.
+///
+/// `Client::new_with_notifications` registers the callback on the current thread's `CFRunLoop`. On
+/// iOS and macOS, Tauri invokes plugin `setup` on the main thread, whose runloop is driven by UIKit
+/// / AppKit for the lifetime of the process, so no dedicated runloop thread is needed.
+///
+/// The returned `Client` must be kept alive for the lifetime of the process; dropping it calls
+/// `MIDIClientDispose` and notifications stop being delivered. The caller is expected to move it
+/// into a long-lived owner (e.g. the polling thread's closure).
+///
+/// Unlike `coremidi-hotplug-notification`, this does not create a virtual MIDI source as a sanity
+/// check, so iOS consumers do not need `UIBackgroundModes = [audio]` in their `Info.plist` and no
+/// phantom virtual source appears.
+///
+/// Returns `None` if the notification client could not be created (e.g. extremely unusual sandbox
+/// configurations). The plugin still functions in that case — it just won't see hotplug changes
+/// until the process restarts.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[must_use = "the returned Client must be kept alive or notifications will stop being delivered"]
+fn start_coremidi_notification_client() -> Option<coremidi::Client> {
+    use coremidi::{Client, Notification};
+
+    match Client::new_with_notifications(
+        "tauri-plugin-midi notifications",
+        |_: &Notification| {},
+    ) {
+        Ok(client) => Some(client),
+        Err(status) => {
+            eprintln!(
+                "tauri-plugin-midi: failed to create CoreMIDI notification client: OSStatus \
+                 {status}. Hotplug detection will not work."
+            );
+            None
+        }
+    }
+}
+
 fn builder<R: Runtime>() -> tauri_specta::Builder<R> {
     tauri_specta::Builder::<R>::new()
         .plugin_name(PLUGIN_NAME)
@@ -270,26 +319,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 
             let app = app.clone();
 
-            // On CoreMIDI (macOS/iOS), a `MIDIClient` only sees updated device lists after it
-            // processes MIDI notifications on a running `CFRunLoop`. `midir`'s CoreMIDI backend
-            // creates its client with a null notify proc and installs no runloop, so if it is the
-            // first `MIDIClientCreate` call in the process, hotplug notifications are never
-            // delivered to this process and `MIDIGetNumberOfSources`/`Destinations` never change.
-            //
-            // `coremidi_hotplug_notification::receive_device_updates` installs a notification
-            // client with a dedicated runloop thread BEFORE we create any `midir` clients, which
-            // both fixes the thread selection for notifications and keeps CoreMIDI's global device
-            // state up to date. This is required on iOS; on macOS it also avoids the same bug when
-            // devices are hot-plugged after startup.
-            //
-            // On iOS, the crate creates a virtual MIDI source as a sanity check, which requires the
-            // app's `Info.plist` to declare `audio` in `UIBackgroundModes` (i.e. the "Background
-            // Modes -> Audio, AirPlay, and Picture in Picture" capability in Xcode). Without it,
-            // `MIDISourceCreate` returns `kMIDINotPermitted` (OSStatus -10844) and this call
-            // panics. No special entitlement or paid developer account is required.
             #[cfg(any(target_os = "macos", target_os = "ios"))]
-            coremidi_hotplug_notification::receive_device_updates(|| {})
-                .expect("Failed to register for MIDI device updates");
+            let coremidi_notification_client = start_coremidi_notification_client();
 
             spawn(move || {
                 let midi_in = midir::MidiInput::new("tauri-plugin-midi blank input")
@@ -298,6 +329,12 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
                 let midi_out = midir::MidiOutput::new("tauri-plugin-midi blank output")
                     .map_err(|e| format!("Failed to create MIDI output: {e}"))
                     .unwrap();
+
+                // The CoreMIDI notification client is owned by this thread so it stays alive for
+                // the lifetime of the process. Dropping it would call `MIDIClientDispose` and stop
+                // delivery of hotplug notifications.
+                #[cfg(any(target_os = "macos", target_os = "ios"))]
+                let _coremidi_notification_client = coremidi_notification_client;
 
                 loop {
                     StateChange {
