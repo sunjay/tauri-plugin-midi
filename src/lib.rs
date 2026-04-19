@@ -270,7 +270,24 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 
             let app = app.clone();
 
-            #[cfg(target_os = "macos")]
+            // On CoreMIDI (macOS/iOS), a `MIDIClient` only sees updated device lists after it
+            // processes MIDI notifications on a running `CFRunLoop`. `midir`'s CoreMIDI backend
+            // creates its client with a null notify proc and installs no runloop, so if it is the
+            // first `MIDIClientCreate` call in the process, hotplug notifications are never
+            // delivered to this process and `MIDIGetNumberOfSources`/`Destinations` never change.
+            //
+            // `coremidi_hotplug_notification::receive_device_updates` installs a notification
+            // client with a dedicated runloop thread BEFORE we create any `midir` clients, which
+            // both fixes the thread selection for notifications and keeps CoreMIDI's global device
+            // state up to date. This is required on iOS; on macOS it also avoids the same bug when
+            // devices are hot-plugged after startup.
+            //
+            // On iOS, the crate creates a virtual MIDI source as a sanity check, which requires the
+            // app's `Info.plist` to declare `audio` in `UIBackgroundModes` (i.e. the "Background
+            // Modes -> Audio, AirPlay, and Picture in Picture" capability in Xcode). Without it,
+            // `MIDISourceCreate` returns `kMIDINotPermitted` (OSStatus -10844) and this call
+            // panics. No special entitlement or paid developer account is required.
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
             coremidi_hotplug_notification::receive_device_updates(|| {})
                 .expect("Failed to register for MIDI device updates");
 
