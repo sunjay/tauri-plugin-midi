@@ -20,19 +20,23 @@ rustc-args = ["--cfg", "docsrs"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-midir = "0.10"
+midir = "0.11"
 serde = "1"
-specta = "=2.0.0-rc.22"
+specta = "=2.0.0-rc.24"
 tauri = "2"
-tauri-specta = { version = "=2.0.0-rc.21", features = ["derive"] }
-tokio = { version = "1.29.1", features = ["time"] }
+# Pinned to git rev on `main` because the published 2.0.0-rc.24 generates an incorrect Tauri plugin
+# command prefix (`plugin|name|cmd` instead of `plugin:name|cmd`). Fixed upstream in
+# https://github.com/specta-rs/tauri-specta/commit/28cb1496a912d3b7c8908e67c6e670ea2b9d1047 but not
+# yet released. Switch back to crates.io once 2.0.0-rc.25+ ships.
+tauri-specta = { git = "https://github.com/specta-rs/tauri-specta", rev = "28cb1496a912d3b7c8908e67c6e670ea2b9d1047", features = ["derive"] }
+tokio = { version = "1.52", features = ["time"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
-coremidi = "0.8"
+coremidi = "0.9"
 
 [dev-dependencies]
-tauri-specta = { version = "=2.0.0-rc.21", features = ["typescript"] }
-specta-typescript = { version = "0.0.9" }
+tauri-specta = { git = "https://github.com/specta-rs/tauri-specta", rev = "28cb1496a912d3b7c8908e67c6e670ea2b9d1047", features = ["typescript"] }
+specta-typescript = { version = "0.0.11" }
 
 [build-dependencies]
-tauri-plugin = { version = "2.0.0-rc.13", features = ["build"] }
+tauri-plugin = { version = "2.5", features = ["build"] }
